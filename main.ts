@@ -4,7 +4,7 @@
 // kit's own library so the bytes match what the scorer rebuilds.
 // Run it anywhere with:  MAKEFUN_OUTPUT_DIR=out node main.ts
 
-import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-game.ts';
@@ -25,10 +25,9 @@ const CAPS = {
   game_path_max_bytes: 1000,
 };
 
-function freshDir(path) {
-  rmSync(path, { recursive: true, force: true });
-  mkdirSync(path, { recursive: true });
-}
+// The grader mounts the output folder, so it must never be torn down:
+// just guarantee it is there, bringing any missing parents with it.
+mkdirSync(outDir, { recursive: true });
 
 function copyTree(name) {
   const from = join(repoDir, name);
@@ -37,7 +36,6 @@ function copyTree(name) {
   cpSync(from, to, { recursive: true });
 }
 
-freshDir(outDir);
 copyTree('game');
 copyTree('screenshots');
 
