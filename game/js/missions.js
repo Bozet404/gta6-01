@@ -1,257 +1,295 @@
-// SOLMARA — missions: five story jobs, sequential, with a 3D beacon, a
-// minimap marker, timers, rewards, and the "King of Solmara" finale.
-SOL.missions = {
-  marker: null, markerRing: null, markerTarget: null,
-  defs: [
-    {
-      name: 'First Wheels', reward: 150,
-      brief: 'Madame Solana needs a driver. Steal any car and bring it to the <b>Solmara Docks</b>.',
-      start(g) { this.setMarker(SOL.city.spots.docks.x, SOL.city.spots.docks.z); g.missionState = { stage: 0 }; },
-      tick(g, dt) {
-        const d = SOL.util.dist2(g.player.x, g.player.z, SOL.city.spots.docks.x, SOL.city.spots.docks.z);
-        if (g.playerCar && d < 8) return 'done';
-        return null;
-      },
-      doneText: 'First job done. Solana is watching you, Rio.',
-    },
-    {
-      name: 'Kurir Panik', reward: 200,
-      brief: 'Pick up the package at the <b>docks</b>, then deliver it across town in <b>90 seconds</b> — the Vultures are coming for it. Shoot back from the car!',
-      start(g) {
-        this.setMarker(SOL.city.spots.docks.x, SOL.city.spots.docks.z);
-        g.missionState = { stage: 0, timer: 90, chasers: [] };
-      },
-      tick(g, dt) {
-        const s = g.missionState;
-        if (s.stage === 0) {
-          const d = SOL.util.dist2(g.player.x, g.player.z, SOL.city.spots.docks.x, SOL.city.spots.docks.z);
-          if (d < 8) {
-            s.stage = 1;
-            const dest = { x: -150, z: 150 };
-            this.setMarker(dest.x, dest.z);
-            s.dest = dest;
-            SOL.hud.say('Package secured! Now RUN — the Vultures are on you!');
-            // Two rival chase cars spawn behind the player.
-            for (let i = 0; i < 2; i++) {
-              const c = SOL.vehicles.makeCar(0x1a1a1a, false);
-              SOL.vehicles.place(c, g.player.x + SOL.util.rand(-25, 25), g.player.z + SOL.util.rand(25, 40), 0);
-              c.cruise = 20; c.chaser = true;
-              g.traffic.push(c);
-              s.chasers.push(c);
-            }
-          }
-          return null;
-        }
-        s.timer -= dt;
-        if (s.timer <= 0) return 'fail';
-        const d = SOL.util.dist2(g.player.x, g.player.z, s.dest.x, s.dest.z);
-        if (d < 8) return 'done';
-        // Chasers ram the player.
-        for (const c of s.chasers) {
-          const cd = SOL.util.dist2(c.x, c.z, g.player.x, g.player.z);
-          const want = Math.atan2(g.player.z - c.z, g.player.x - c.x);
-          c.heading = SOL.util.angLerp(c.heading, want, Math.min(1, 2.4 * dt));
-          c.speed = SOL.util.lerp(c.speed, cd > 8 ? 24 : 12, Math.min(1, 1.5 * dt));
-          c.x += Math.cos(c.heading) * c.speed * dt;
-          c.z += Math.sin(c.heading) * c.speed * dt;
-          const fixed = SOL.city.collide(c.x, c.z, 2.3);
-          c.x = fixed.x; c.z = fixed.z;
-          c.group.position.set(c.x, 0, c.z);
-          c.group.rotation.y = -c.heading;
-          if (cd < 4.6 && g.playerCar) SOL.vehicles.damageCar(g.playerCar, 10 * dt);
-        }
-        return null;
-      },
-      doneText: 'Delivered — with the Vultures eating your dust. +$50 speed bonus!',
-      bonus(g) { return g.missionState.timer > 30 ? 50 : 0; },
-    },
-    {
-      name: 'Hot Pursuit', reward: 250,
-      brief: 'You are at <b>2 stars</b>. Lose the cops — get the heat to zero within <b>120 seconds</b>.',
-      start(g) {
-        SOL.wanted.addHeat(2, 'Wanted! Lose the Solmara PD!');
-        g.missionState = { timer: 120 };
-        this.clearMarker();
-      },
-      tick(g, dt) {
-        const s = g.missionState;
-        s.timer -= dt;
-        if (g.wanted === 0) return 'done';
-        if (s.timer <= 0) return 'fail';
-        return null;
-      },
-      doneText: 'Clean. The PD lost your trail.',
-    },
-    {
-      name: 'Harbor Trouble', reward: 300,
-      brief: 'Six Vultures hold the <b>docks</b>. Take them all down, then get back to the <b>hideout</b>.',
-      start(g) {
-        this.setMarker(SOL.city.spots.docks.x, SOL.city.spots.docks.z);
-        g.missionState = { stage: 0, left: 6 };
-        for (let i = 0; i < 6; i++) {
-          SOL.combat.spawnEnemy(
-            SOL.city.spots.docks.x + SOL.util.rand(-22, 22),
-            SOL.city.spots.docks.z + SOL.util.rand(-22, 22));
-        }
-        SOL.hud.say('Six Vultures at the docks. Make it loud.');
-      },
-      tick(g, dt) {
-        const s = g.missionState;
-        if (s.stage === 0) {
-          if (g.enemies.length === 0) {
-            s.stage = 1;
-            this.setMarker(SOL.city.spots.hideout.x, SOL.city.spots.hideout.z);
-            SOL.hud.say('Docks clear! Get back to the hideout.');
-          }
-          return null;
-        }
-        const d = SOL.util.dist2(g.player.x, g.player.z, SOL.city.spots.hideout.x, SOL.city.spots.hideout.z);
-        if (d < 8) return 'done';
-        return null;
-      },
-      doneText: 'The docks are yours. Solana is impressed.',
-    },
-    {
-      name: 'The Big Score', reward: 500,
-      brief: 'Steal the golden <b>Solmara GT</b> from the Marina Car Lot — it is guarded. Then lose a <b>3-star</b> heat and reach the <b>hideout</b>.',
-      start(g) {
-        this.setMarker(SOL.city.spots.lot.x, SOL.city.spots.lot.z);
-        g.missionState = { stage: 0, guards: [] };
-        // The golden GT, parked in the lot.
-        const gt = SOL.vehicles.makeCar(0xf2b01e, false);
-        SOL.vehicles.place(gt, SOL.city.spots.lot.x, SOL.city.spots.lot.z, Math.PI / 2);
-        gt.parked = true; gt.isGT = true;
-        g.traffic.push(gt);
-        g.missionState.gt = gt;
-        for (let i = 0; i < 2; i++) {
-          g.missionState.guards.push(SOL.combat.spawnEnemy(
-            SOL.city.spots.lot.x + SOL.util.rand(-10, 10),
-            SOL.city.spots.lot.z + SOL.util.rand(-10, 10)));
-        }
-        SOL.hud.say('The golden Solmara GT is in the lot. Two guards. Your move.');
-      },
-      tick(g, dt) {
-        const s = g.missionState;
-        if (s.stage === 0) {
-          if (g.playerCar && g.playerCar.isGT) {
-            s.stage = 1;
-            SOL.wanted.addHeat(3, 'The GT is gone — 3 stars! Lose them and reach the hideout!');
-            this.setMarker(SOL.city.spots.hideout.x, SOL.city.spots.hideout.z);
-          }
-          return null;
-        }
-        if (g.wanted === 0) {
-          const d = SOL.util.dist2(g.player.x, g.player.z, SOL.city.spots.hideout.x, SOL.city.spots.hideout.z);
-          if (d < 8) return 'done';
-        }
-        return null;
-      },
-      doneText: 'The Big Score is yours. KING OF SOLMARA.',
-    },
-  ],
-  init(scene) {
-    // Beacon: a tall glowing pillar + a ground ring at the marker.
-    const geo = new THREE.CylinderGeometry(1.2, 1.2, 60, 12, 1, true);
-    const mat = new THREE.MeshBasicMaterial({ color: 0xffd23f, transparent: true, opacity: 0.35, side: THREE.DoubleSide, depthWrite: false });
-    this.marker = new THREE.Mesh(geo, mat);
-    this.marker.position.y = 30; this.marker.visible = false;
-    scene.add(this.marker);
-    const ringGeo = new THREE.RingGeometry(3, 4.2, 24);
-    const ringMat = new THREE.MeshBasicMaterial({ color: 0xffd23f, transparent: true, opacity: 0.8, side: THREE.DoubleSide });
-    this.markerRing = new THREE.Mesh(ringGeo, ringMat);
-    this.markerRing.rotation.x = -Math.PI / 2; this.markerRing.position.y = 0.15;
-    this.markerRing.visible = false;
-    scene.add(this.markerRing);
-  },
-  setMarker(x, z) {
-    this.markerTarget = { x, z };
-    this.marker.position.set(x, 30, z);
-    this.markerRing.position.set(x, 0.15, z);
-    this.marker.visible = true; this.markerRing.visible = true;
-  },
-  clearMarker() {
-    this.markerTarget = null;
-    this.marker.visible = false; this.markerRing.visible = false;
-  },
-  current() { return this.defs[SOL.G.missionIndex] || null; },
-  startCurrent() {
-    const def = this.current();
-    if (!def) return;
-    SOL.G.missionState = null;
-    def.start.call(this, SOL.G);
-    SOL.hud.setObjective(`<b>JOB ${SOL.G.missionIndex + 1} — ${def.name}</b><br>${def.brief}`);
-    SOL.hud.say(`Job ${SOL.G.missionIndex + 1}: ${def.name}`);
-  },
-  completeCurrent() {
-    const G = SOL.G, def = this.current();
-    if (!def) return;
-    let pay = def.reward + (def.bonus ? def.bonus(G) : 0);
-    G.money += pay;
-    G.missionDone[G.missionIndex] = true;
-    SOL.audio.jingle();
-    SOL.hud.banner(def.name + ' COMPLETE', `+$${pay} — ${def.doneText}`);
-    SOL.save.save();
-    // Clean up mission leftovers (chasers).
-    if (G.missionState && G.missionState.chasers) {
-      for (const c of G.missionState.chasers) {
-        const i = G.traffic.indexOf(c);
-        if (i >= 0) G.traffic.splice(i, 1);
-        G.scene.remove(c.group);
+// Mara Voss's five story jobs, taxi fares and cash pickups. A beacon marks
+// the current objective; the HUD shows the job name and what to do next.
+import { dist2, fmtCash } from './util.js';
+import { Vulture } from './people.js';
+import { TrafficCar } from './vehicles.js';
+
+const JOBS = [
+  { name: 'Job 1 — First Wheels', pay: 150, text: 'Steal any car. Parked cars are free; moving ones draw heat.' },
+  { name: 'Job 2 — Kurir Panik', pay: 200, text: 'Deliver the package to the Harbor before Dario Kess gets there.' },
+  { name: 'Job 3 — Hot Pursuit', pay: 250, text: 'Get to 2 wanted stars, then lose the cops.' },
+  { name: 'Job 4 — Harbor Trouble', pay: 300, text: 'Clear the docks: take out 6 Vultures.' },
+  { name: 'Job 5 — The Big Score', pay: 500, text: 'Hit Meridian Bank, grab the cash, reach the safehouse.' },
+];
+
+const PICKUP_SPOTS = [
+  [-45, -112], [90, -45], [-135, 90], [135, 45], [0, -112],
+  [-180, 0], [157, -112], [-67, 112],
+];
+
+function makeBeacon(scene) {
+  const g = new THREE.Group();
+  const beam = new THREE.Mesh(
+    new THREE.CylinderGeometry(2.6, 2.6, 42, 14, 1, true),
+    new THREE.MeshBasicMaterial({ color: 0xffc93b, transparent: true, opacity: 0.22, side: THREE.DoubleSide, depthWrite: false })
+  );
+  beam.position.y = 21;
+  g.add(beam);
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(2.2, 3.4, 24),
+    new THREE.MeshBasicMaterial({ color: 0xffc93b, transparent: true, opacity: 0.8, side: THREE.DoubleSide })
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.15;
+  g.add(ring);
+  g.visible = false;
+  scene.add(g);
+  return g;
+}
+
+function makePickup(scene, x, z) {
+  const g = new THREE.Group();
+  const box = new THREE.Mesh(
+    new THREE.BoxGeometry(0.9, 0.5, 0.6),
+    new THREE.MeshLambertMaterial({ color: 0x2e9e4f, emissive: 0x0d5a22 })
+  );
+  box.position.y = 0.7;
+  box.castShadow = true;
+  g.add(box);
+  const band = new THREE.Mesh(
+    new THREE.BoxGeometry(0.94, 0.12, 0.64),
+    new THREE.MeshLambertMaterial({ color: 0xf2e6b0 })
+  );
+  band.position.y = 0.7;
+  g.add(band);
+  g.position.set(x, 0, z);
+  scene.add(g);
+  return { mesh: g, x, z, taken: false, respawnT: 0 };
+}
+
+export function createMissions(G) {
+  const M = {
+    index: 0,
+    stage: 0,
+    timer: 0,
+    rival: null,
+    vulturesLeft: 0,
+    fare: null,
+    grabT: 0,
+    done: false,
+    beacon: makeBeacon(G.scene),
+    pickups: PICKUP_SPOTS.map(([x, z]) => makePickup(G.scene, x, z)),
+    job() { return JOBS[this.index]; },
+    setObjective() {
+      const job = this.index < JOBS.length ? JOBS[this.index] : null;
+      if (this.fare) {
+        G.hud.setObjective('Taxi fare', `Drop your passenger at the marker — ${Math.ceil(this.fare.t)}s left.`);
+        return;
       }
-    }
-    this.clearMarker();
-    G.missionIndex++;
-    if (G.missionIndex >= this.defs.length) {
-      SOL.hud.setObjective('<b>STORY COMPLETE</b><br>You are the King of Solmara. Free roam, take fares, cause chaos.');
-      SOL.hud.banner('KING OF SOLMARA', 'All five jobs done. The city is yours.');
-      return;
-    }
-    setTimeout(() => this.startCurrent(), 2500);
-  },
-  failCurrent() {
-    SOL.hud.banner('JOB FAILED', 'Too slow — try the job again.');
-    SOL.audio.busted();
-    setTimeout(() => this.startCurrent(), 2000);
-  },
-  onEnterCar(car) {
-    // Missions watch the car state through tick(); nothing extra here.
-  },
-  onCarLost() {
-    // Wrecked during a driving mission: restart the job.
-    if (SOL.G.missionIndex < this.defs.length) {
-      SOL.hud.say('Ride wrecked — the job restarts.');
-      setTimeout(() => this.startCurrent(), 1500);
-    }
-  },
-  onEnemyDown() { /* tick() counts enemies directly */ },
-  onBusted() {
-    // After a bust, restart the current job fresh.
-    if (SOL.G.missionIndex < this.defs.length) {
-      setTimeout(() => { if (SOL.G.state === 'playing') this.startCurrent(); }, 2500);
-    }
-  },
-  objectiveText() {
-    const def = this.current();
-    if (!def) return '';
-    const s = SOL.G.missionState;
-    let extra = '';
-    if (s && s.timer !== undefined) extra = `<br>Time left: <b>${Math.ceil(s.timer)}s</b>`;
-    if (s && s.stage === 0 && SOL.G.missionIndex === 3) extra = `<br>Vultures left: <b>${SOL.G.enemies.length}</b>`;
-    return `<b>JOB ${SOL.G.missionIndex + 1} — ${def.name}</b><br>${def.brief}${extra}`;
-  },
-  update(dt) {
-    const G = SOL.G;
-    if (G.state !== 'playing' || !this.current() || !G.missionState) return;
-    // Beacon pulse.
-    if (this.marker.visible) {
-      this.marker.rotation.y += dt * 0.8;
-      const s = 1 + Math.sin(G.time * 3) * 0.12;
-      this.markerRing.scale.set(s, s, 1);
-    }
-    const def = this.current();
-    const res = def.tick.call(this, G, dt);
-    if (res === 'done') this.completeCurrent();
-    else if (res === 'fail') this.failCurrent();
-    SOL.hud.setObjective(this.objectiveText());
-  },
-};
+      if (!job) {
+        G.hud.setObjective('Story complete', 'Solmara is yours. Taxi fares and cash pickups still pay.');
+        return;
+      }
+      let text = job.text;
+      if (this.index === 1) text += ` ${Math.ceil(this.timer)}s left.`;
+      if (this.index === 2) text = this.stage === 0
+        ? 'Get to 2 wanted stars — steal a moving car or shoot near police.'
+        : 'Now lose them — get far away until the stars are gone.';
+      if (this.index === 3) text = `Clear the docks: take out 6 Vultures. (${6 - this.vulturesLeft} down)`;
+      if (this.index === 4) text = this.stage === 0
+        ? 'Drive to Meridian Bank (gold tower, downtown).'
+        : this.stage === 1 ? 'Press E at the bank doors to grab the cash.'
+        : 'Wanted 3! Reach the safehouse in the south-west.';
+      G.hud.setObjective(job.name, text);
+    },
+    startJob(i) {
+      this.index = i;
+      this.stage = 0;
+      this.timer = 0;
+      this.grabT = 0;
+      if (i === 1) {
+        this.timer = 75;
+        // Dario Kess races the same route: plaza to harbor.
+        this.rival = new TrafficCar(G.scene, [
+          { x: -67, z: -40 }, { x: -45, z: 0 }, { x: 0, z: 45 }, { x: 0, z: 150 },
+        ], G.rng, 0);
+        this.rival.speed = 13;
+        this.rival.mesh.children[0].material = new THREE.MeshLambertMaterial({ color: 0x8a1f1f });
+        G.cars.traffic.push(this.rival);
+      }
+      if (i === 3) {
+        const spots = [[-80, 158], [-40, 162], [0, 156], [40, 162], [80, 158], [20, 168]];
+        for (const [x, z] of spots) {
+          const v = new Vulture(G.scene, x, z, G.rng);
+          v.mesh.userData.vulture = v;
+          G.vultures.push(v);
+        }
+        this.vulturesLeft = 6;
+      }
+      this.setObjective();
+    },
+    complete(pay) {
+      G.money += pay;
+      G.sounds.jingle();
+      const job = JOBS[this.index];
+      G.hud.toast(`${job.name} complete — +${fmtCash(pay)}!`);
+      this.index += 1;
+      this.stage = 0;
+      this.timer = 0;
+      if (this.index >= JOBS.length) {
+        this.done = true;
+        this.beacon.visible = false;
+        this.setObjective();
+        return;
+      }
+      this.startJob(this.index);
+    },
+    failJob(why) {
+      G.hud.toast(`${why} — try the job again.`);
+      this.startJob(this.index);
+    },
+    onVultureDown() {
+      if (this.index !== 3) return;
+      this.vulturesLeft = Math.max(0, this.vulturesLeft - 1);
+      this.setObjective();
+      if (this.vulturesLeft === 0) this.complete(JOBS[3].pay);
+    },
+    // E pressed: bank grab, taxi start, or nothing (car enter is handled by boot).
+    interact() {
+      const p = G.player.mesh.position;
+      if (this.index === 4 && this.stage === 1) {
+        const b = G.city.places.bank;
+        if (dist2(p.x, p.z, b.x, b.z) < 9) {
+          this.grabT += 0.5;
+          G.hud.setHint('Grabbing the cash…');
+          if (this.grabT >= 2) {
+            this.stage = 2;
+            G.wanted.setLevel(3);
+            G.hud.toast('Alarms! Wanted 3 — get to the safehouse!');
+            this.setObjective();
+          }
+          return 'grab';
+        }
+      }
+      if (!this.fare) {
+        for (const c of G.taxiCustomers) {
+          if (c.served || c.knocked) continue;
+          const d = dist2(p.x, p.z, c.mesh.position.x, c.mesh.position.z);
+          if (d < 3.5) {
+            const dests = [G.city.places.beach, G.city.places.downtown, G.city.places.harbor, G.city.places.plaza];
+            const dest = dests[Math.floor(Math.random() * dests.length)];
+            this.fare = { customer: c, dest, t: 60, pay: 40 + Math.floor(Math.random() * 41) };
+            c.served = true;
+            c.marker.visible = false;
+            G.hud.toast(`Taxi fare — take them to the marker (${fmtCash(this.fare.pay)}).`);
+            this.setObjective();
+            return 'taxi';
+          }
+        }
+      }
+      return null;
+    },
+    update(dt) {
+      const p = G.player.mesh.position;
+      // Beacon follows the active objective.
+      let target = null;
+      if (this.fare) target = this.fare.dest;
+      else if (this.index === 1) target = G.city.places.harbor;
+      else if (this.index === 3) target = G.city.places.docks;
+      else if (this.index === 4) target = this.stage === 2 ? G.city.places.safehouse : G.city.places.bank;
+      else if (this.index === 0) target = null;
+      if (target) {
+        this.beacon.visible = true;
+        this.beacon.position.set(target.x, 0, target.z);
+        const s = 1 + Math.sin(G.time * 3) * 0.12;
+        this.beacon.scale.set(s, 1, s);
+      } else {
+        this.beacon.visible = false;
+      }
+      // Pickups: walk over to collect.
+      for (const pk of this.pickups) {
+        if (pk.taken) {
+          pk.respawnT -= dt;
+          if (pk.respawnT <= 0) {
+            pk.taken = false;
+            pk.mesh.visible = true;
+          }
+          continue;
+        }
+        pk.mesh.rotation.y += dt * 1.5;
+        pk.mesh.position.y = Math.sin(G.time * 2 + pk.x) * 0.15;
+        if (dist2(p.x, p.z, pk.x, pk.z) < 2.2) {
+          pk.taken = true;
+          pk.respawnT = 90;
+          pk.mesh.visible = false;
+          G.money += 25;
+          G.sounds.blip(990);
+          G.hud.toast('+ $25 cash pickup');
+        }
+      }
+      // Taxi fare timer + arrival.
+      if (this.fare) {
+        this.fare.t -= dt;
+        if (dist2(p.x, p.z, this.fare.dest.x, this.fare.dest.z) < 9) {
+          G.money += this.fare.pay;
+          G.sounds.jingle();
+          G.hud.toast(`Fare complete — +${fmtCash(this.fare.pay)}!`);
+          this.fare = null;
+          this.setObjective();
+        } else if (this.fare.t <= 0) {
+          G.hud.toast('Fare cancelled — too slow.');
+          this.fare = null;
+          this.setObjective();
+        }
+      }
+      if (this.index >= JOBS.length) return;
+      // Job 0: steal any car.
+      if (this.index === 0) {
+        if (G.player.inCar) this.complete(JOBS[0].pay);
+        return;
+      }
+      // Job 1: race Dario to the harbor.
+      if (this.index === 1) {
+        this.timer -= dt;
+        if (dist2(p.x, p.z, G.city.places.harbor.x, G.city.places.harbor.z) < 10) {
+          if (this.rival) {
+            G.scene.remove(this.rival.mesh);
+            const ri = G.cars.traffic.indexOf(this.rival);
+            if (ri >= 0) G.cars.traffic.splice(ri, 1);
+            this.rival = null;
+          }
+          this.complete(JOBS[1].pay);
+          return;
+        }
+        if (this.rival) {
+          const rp = this.rival.mesh.position;
+          if (dist2(rp.x, rp.z, G.city.places.harbor.x, G.city.places.harbor.z) < 10) {
+            this.failJob('Dario Kess beat you to the Harbor');
+            return;
+          }
+        }
+        if (this.timer <= 0) {
+          this.failJob('Out of time on the delivery');
+          return;
+        }
+        this.setObjective();
+        return;
+      }
+      // Job 2: wanted 2, then lose them.
+      if (this.index === 2) {
+        if (this.stage === 0 && G.wanted.level >= 2) {
+          this.stage = 1;
+          G.hud.toast('2 stars! Now lose them.');
+          this.setObjective();
+        } else if (this.stage === 1 && G.wanted.level === 0) {
+          this.complete(JOBS[2].pay);
+        }
+        return;
+      }
+      // Job 3: handled by onVultureDown.
+      if (this.index === 3) return;
+      // Job 4: bank, grab, safehouse.
+      if (this.index === 4) {
+        if (this.stage === 0 && dist2(p.x, p.z, G.city.places.bank.x, G.city.places.bank.z) < 9) {
+          this.stage = 1;
+          G.hud.toast('At the bank — press E to grab the cash.');
+          this.setObjective();
+        } else if (this.stage === 2 && dist2(p.x, p.z, G.city.places.safehouse.x, G.city.places.safehouse.z) < 10) {
+          this.complete(JOBS[4].pay);
+        }
+      }
+    },
+  };
+  M.startJob(0);
+  return M;
+}

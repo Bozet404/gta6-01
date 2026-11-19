@@ -1,175 +1,232 @@
-// SOLMARA — player: on-foot third-person controls, the chase camera, and
-// getting in and out of cars. The player object lives in SOL.G.player.
-SOL.player = {
-  mesh: null,
-  make(x, z) {
-    const g = new THREE.Group();
-    const jacket = new THREE.MeshLambertMaterial({ color: 0xffcf3f });
-    const jeans = new THREE.MeshLambertMaterial({ color: 0x2e4a6b });
-    const skin = new THREE.MeshLambertMaterial({ color: 0xe8b88a });
-    const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.4, 1.0, 8), jacket);
-    torso.position.y = 1.15; torso.castShadow = true; g.add(torso);
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.3, 10, 8), skin);
-    head.position.y = 1.95; head.castShadow = true; g.add(head);
-    const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.31, 0.31, 0.12, 10),
-      new THREE.MeshLambertMaterial({ color: 0xd23c2e }));
-    cap.position.y = 2.18; g.add(cap);
-    for (const s of [-1, 1]) {
-      const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.16, 0.9, 6), jeans);
-      leg.position.set(0.18 * s, 0.45, 0); g.add(leg);
-      const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.12, 0.85, 6), jacket);
-      arm.position.set(0.48 * s, 1.2, 0); g.add(arm);
-    }
-    g.position.set(x, 0, z);
-    SOL.G.scene.add(g);
-    SOL.G.player = {
-      mesh: g, x, z, heading: 0, speed: 0, onFoot: true,
-      walkPhase: 0, aimYaw: 0, camYaw: Math.PI, camPitch: 0.32, camDist: 8,
-    };
-    return SOL.G.player;
-  },
-  // Forced out when the player's car is wrecked.
-  ejectFromWreck(car) {
-    const p = SOL.G.player;
-    p.onFoot = true;
-    p.x = car.x + 4; p.z = car.z + 4;
-    p.mesh.visible = true;
-    p.mesh.position.set(p.x, 0, p.z);
-    SOL.hud.say('Your ride is wrecked! On foot now.');
-    SOL.missions.onCarLost();
-  },
-  update(dt) {
-    const G = SOL.G, U = SOL.util, p = G.player;
-    if (!p) return;
-    const inp = SOL.input;
-    // Mouse look: yaw + pitch, pointer-locked or drag.
-    const m = inp.consumeMouse();
-    p.camYaw -= m.dx * 0.0032;
-    p.camPitch = U.clamp(p.camPitch + m.dy * 0.0022, 0.05, 1.1);
-    if (G.playerCar) { this.updateCarCam(dt); return; }
-    // On-foot movement, relative to the camera yaw.
-    const fwd = (inp.down('KeyW') || inp.down('ArrowUp') ? 1 : 0) - (inp.down('KeyS') || inp.down('ArrowDown') ? 1 : 0);
-    const strafe = (inp.down('KeyD') || inp.down('ArrowRight') ? 1 : 0) - (inp.down('KeyA') || inp.down('ArrowLeft') ? 1 : 0);
-    const run = inp.down('ShiftLeft') || inp.down('ShiftRight');
-    const topSpeed = run ? 10 : 6;
-    let mx = 0, mz = 0;
-    if (fwd || strafe) {
-      const cy = p.camYaw;
-      mx = Math.sin(cy) * fwd + Math.cos(cy) * strafe;
-      mz = Math.cos(cy) * fwd - Math.sin(cy) * strafe;
-      const len = Math.sqrt(mx * mx + mz * mz);
-      mx /= len; mz /= len;
-      p.heading = U.angLerp(p.heading, Math.atan2(mx, mz), Math.min(1, 12 * dt));
-    }
-    p.speed = U.lerp(p.speed, (fwd || strafe) ? topSpeed : 0, Math.min(1, 10 * dt));
-    const nx = p.x + Math.sin(p.heading) * p.speed * dt;
-    const nz = p.z + Math.cos(p.heading) * p.speed * dt;
-    const fixed = SOL.city.collide(nx, nz, 0.6);
-    p.x = fixed.x; p.z = fixed.z;
-    p.walkPhase += p.speed * dt * 1.6;
-    p.mesh.position.set(p.x, Math.abs(Math.sin(p.walkPhase)) * 0.07, p.z);
+// The player on foot: WASD movement relative to the camera, sprint, an
+// orbit camera the mouse drags, entering and leaving cars, and hitscan
+// shooting with tracers, impact sparks and a hit marker for feedback.
+import { clamp, angLerp, collideCircle } from './util.js';
+
+const WALK_SPEED = 6.2;
+const SPRINT_SPEED = 9.6;
+const MAG_SIZE = 12;
+const RELOAD_TIME = 1.2;
+
+export function createPlayer(scene) {
+  const g = new THREE.Group();
+  const jacket = new THREE.MeshLambertMaterial({ color: 0xffb02e });
+  const denim = new THREE.MeshLambertMaterial({ color: 0x2c4a6e });
+  const skin = new THREE.MeshLambertMaterial({ color: 0xe8b88a });
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.82, 0.36), jacket);
+  torso.position.y = 1.06;
+  torso.castShadow = true;
+  g.add(torso);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.27, 10, 8), skin);
+  head.position.y = 1.7;
+  head.castShadow = true;
+  g.add(head);
+  const cap = new THREE.Mesh(
+    new THREE.BoxGeometry(0.5, 0.12, 0.5),
+    new THREE.MeshLambertMaterial({ color: 0x1e2226 })
+  );
+  cap.position.y = 1.92;
+  g.add(cap);
+  const legs = [];
+  for (const s of [-1, 1]) {
+    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.72, 0.24), denim);
+    leg.position.set(s * 0.17, 0.36, 0);
+    g.add(leg);
+    legs.push(leg);
+  }
+  // The gun the player holds: a small dark box on the right hand side.
+  const gun = new THREE.Mesh(
+    new THREE.BoxGeometry(0.09, 0.14, 0.42),
+    new THREE.MeshLambertMaterial({ color: 0x14161a })
+  );
+  gun.position.set(0.42, 1.05, 0.25);
+  g.add(gun);
+  scene.add(g);
+  return {
+    mesh: g,
+    legs,
+    heading: 0,
+    hp: 100,
+    ammo: MAG_SIZE,
+    reloading: false,
+    reloadT: 0,
+    inCar: false,
+    car: null,
+    speed: 0,
+    camYaw: Math.PI,
+    camPitch: 0.32,
+    walkPhase: 0,
+  };
+}
+
+// Move on foot. `move` is {x, z} in world space, already normalised.
+export function updatePlayerOnFoot(G, dt, move) {
+  const p = G.player;
+  const sprint = G.keys.has('ShiftLeft') || G.keys.has('ShiftRight');
+  const target = sprint ? SPRINT_SPEED : WALK_SPEED;
+  const mx = move.x * target;
+  const mz = move.z * target;
+  p.speed = Math.hypot(mx, mz);
+  if (p.speed > 0.1) {
+    const want = Math.atan2(mx, mz);
+    p.heading = angLerp(p.heading, want, Math.min(1, dt * 12));
     p.mesh.rotation.y = p.heading;
-    // Car push: on-foot player shoved gently by moving cars.
-    for (const c of [...G.traffic, ...G.cops]) {
-      const d = U.dist2(p.x, p.z, c.x, c.z);
-      if (d < 2.6 && d > 0.01) {
-        const push = (2.6 - d);
-        p.x += ((p.x - c.x) / d) * push; p.z += ((p.z - c.z) / d) * push;
-        if (Math.abs(c.speed) > 6) this.hurt(6);
-      }
+    p.walkPhase += dt * p.speed * 1.6;
+    p.legs[0].rotation.x = Math.sin(p.walkPhase) * 0.5;
+    p.legs[1].rotation.x = -Math.sin(p.walkPhase) * 0.5;
+  } else {
+    p.legs[0].rotation.x *= 0.8;
+    p.legs[1].rotation.x *= 0.8;
+  }
+  const nx = p.mesh.position.x + mx * dt;
+  const nz = p.mesh.position.z + mz * dt;
+  const fixed = collideCircle(nx, nz, 0.6, G.city.colliders);
+  p.mesh.position.x = clamp(fixed.x, -228, 228);
+  p.mesh.position.z = clamp(fixed.z, -178, 178);
+}
+
+// Reload countdown runs whether the player is on foot or driving, so
+// re-pressing R in a car after a drive-by actually refills the magazine.
+export function updateReload(G, dt) {
+  const p = G.player;
+  if (!p.reloading) return;
+  p.reloadT -= dt;
+  if (p.reloadT <= 0) {
+    p.reloading = false;
+    p.ammo = MAG_SIZE;
+    G.hud.setHint('');
+  }
+}
+
+// One hitscan shot from the camera centre. Returns the hit point and the
+// vulture hit, if any. Creates a tracer + impact sparks for feedback.
+export function shootOnce(G) {
+  const p = G.player;
+  if (p.reloading || p.ammo <= 0) {
+    if (p.ammo <= 0 && !p.reloading) startReload(G);
+    return null;
+  }
+  p.ammo -= 1;
+  G.sounds.shot();
+  const ray = new THREE.Raycaster();
+  ray.setFromCamera({ x: 0, y: 0 }, G.camera);
+  ray.far = 70;
+  const targets = [];
+  for (const v of G.vultures) if (v.alive) targets.push(v.mesh);
+  for (const c of G.cars.traffic) targets.push(c.mesh);
+  for (const c of G.cars.parked) targets.push(c.mesh);
+  for (const c of G.cars.police) targets.push(c.mesh);
+  const hits = ray.intersectObjects(targets, true);
+  let point = null;
+  let vulture = null;
+  if (hits.length > 0) {
+    const h = hits[0];
+    point = h.point.clone();
+    let node = h.object;
+    while (node && !node.userData.vulture) node = node.parent;
+    if (node && node.userData.vulture) vulture = node.userData.vulture;
+  } else {
+    point = ray.ray.origin.clone().add(ray.ray.direction.clone().multiplyScalar(60));
+  }
+  // Tracer from the gun (or the car) to the hit point.
+  const from = p.inCar && p.car
+    ? p.car.mesh.position.clone().add(new THREE.Vector3(0, 1.3, 0))
+    : p.mesh.position.clone().add(new THREE.Vector3(0, 1.35, 0));
+  spawnTracer(G, from, point);
+  spawnSparks(G, point);
+  if (vulture) {
+    const down = vulture.takeHit();
+    G.hud.hitmarker();
+    G.wanted.addHeat(6);
+    if (down) {
+      G.missions.onVultureDown();
+      G.hud.toast('Vulture down!');
     }
-    // Find the nearest car to enter.
-    G.nearCar = SOL.vehicles.nearestCar(p.x, p.z, 5);
-    if (G.nearCar) {
-      SOL.hud.prompt(`<b>E</b> — ${G.nearCar.parked ? 'Take car' : 'Steal car'}`);
-    } else if (G.taxi && G.taxi.state === 'pickup' && U.dist2(p.x, p.z, G.taxi.ped.x, G.taxi.ped.z) < 4) {
-      SOL.hud.prompt('Customer waiting — get in a car');
-    } else {
-      SOL.hud.prompt('');
+  } else if (hits.length > 0) {
+    G.wanted.addHeat(2);
+  }
+  if (p.ammo === 0) startReload(G);
+  return { point, vulture };
+}
+
+export function startReload(G) {
+  const p = G.player;
+  if (p.reloading || p.ammo === MAG_SIZE) return;
+  p.reloading = true;
+  p.reloadT = RELOAD_TIME;
+  G.hud.setHint('Reloading…');
+}
+
+export function spawnTracer(G, from, to) {
+  const geo = new THREE.BufferGeometry().setFromPoints([from, to]);
+  const line = new THREE.Line(geo, new THREE.LineBasicMaterial({
+    color: 0xffe9a0, transparent: true, opacity: 0.9,
+  }));
+  G.scene.add(line);
+  G.effects.tracers.push({ line, life: 0.09 });
+}
+
+export function spawnSparks(G, point) {
+  const n = 10;
+  const geo = new THREE.BufferGeometry();
+  const pos = new Float32Array(n * 3);
+  const vel = [];
+  for (let i = 0; i < n; i++) {
+    pos[i * 3] = point.x;
+    pos[i * 3 + 1] = point.y;
+    pos[i * 3 + 2] = point.z;
+    vel.push(new THREE.Vector3(
+      (Math.random() - 0.5) * 6, Math.random() * 5, (Math.random() - 0.5) * 6
+    ));
+  }
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const pts = new THREE.Points(geo, new THREE.PointsMaterial({
+    color: 0xffc45a, size: 0.28, transparent: true, opacity: 1,
+  }));
+  G.scene.add(pts);
+  G.effects.sparks.push({ pts, vel, life: 0.35 });
+}
+
+export function updateEffects(G, dt) {
+  for (let i = G.effects.tracers.length - 1; i >= 0; i--) {
+    const t = G.effects.tracers[i];
+    t.life -= dt;
+    if (t.life <= 0) {
+      G.scene.remove(t.line);
+      t.line.geometry.dispose();
+      G.effects.tracers.splice(i, 1);
     }
-    // E: get in (edge-triggered so a quick tap always registers).
-    if (SOL.input.consumePressed('KeyE') && G.nearCar) {
-      this.enterCar(G.nearCar);
+  }
+  for (let i = G.effects.sparks.length - 1; i >= 0; i--) {
+    const s = G.effects.sparks[i];
+    s.life -= dt;
+    const arr = s.pts.geometry.attributes.position.array;
+    for (let j = 0; j < s.vel.length; j++) {
+      arr[j * 3] += s.vel[j].x * dt;
+      arr[j * 3 + 1] += s.vel[j].y * dt;
+      arr[j * 3 + 2] += s.vel[j].z * dt;
+      s.vel[j].y -= 12 * dt;
     }
-    // Third-person camera behind the player.
-    const cam = G.camera;
-    const cx = p.x - Math.sin(p.camYaw) * p.camDist * Math.cos(p.camPitch);
-    const cz = p.z - Math.cos(p.camYaw) * p.camDist * Math.cos(p.camPitch);
-    const cy = 2.2 + Math.sin(p.camPitch) * p.camDist;
-    cam.position.set(U.lerp(cam.position.x, cx, Math.min(1, 10 * dt)),
-      U.lerp(cam.position.y, cy, Math.min(1, 10 * dt)),
-      U.lerp(cam.position.z, cz, Math.min(1, 10 * dt)));
-    cam.lookAt(p.x, 1.6, p.z);
-    p.aimYaw = p.camYaw;
-  },
-  updateCarCam(dt) {
-    const G = SOL.G, U = SOL.util, p = G.player, car = G.playerCar;
-    const m = SOL.input.consumeMouse();
-    p.camYaw -= m.dx * 0.0032;
-    p.camPitch = U.clamp(p.camPitch + m.dy * 0.0022, 0.08, 0.9);
-    // Chase camera: behind the car, easing toward its heading.
-    // Car forward is (cos h, sin h), so "behind" is the offset
-    // (-cos h, -sin h) — camYaw is atan2(dx, dz) of that offset.
-    const wantYaw = Math.atan2(-Math.cos(car.heading), -Math.sin(car.heading));
-    p.camYaw = U.angLerp(p.camYaw, wantYaw, Math.min(1, 1.6 * dt));
-    const dist = 11 + Math.abs(car.speed) * 0.08;
-    const cx = car.x + Math.sin(p.camYaw) * dist * Math.cos(p.camPitch);
-    const cz = car.z + Math.cos(p.camYaw) * dist * Math.cos(p.camPitch);
-    const cy = 3.4 + Math.sin(p.camPitch) * dist * 0.7;
-    const cam = G.camera;
-    cam.position.set(U.lerp(cam.position.x, cx, Math.min(1, 6 * dt)),
-      U.lerp(cam.position.y, cy, Math.min(1, 6 * dt)),
-      U.lerp(cam.position.z, cz, Math.min(1, 6 * dt)));
-    cam.lookAt(car.x, 1.4, car.z);
-    // Sync the player's position to the car for the minimap and missions.
-    p.x = car.x; p.z = car.z; p.heading = car.heading;
-    p.mesh.visible = false;
-    // E: get out (edge-triggered).
-    if (SOL.input.consumePressed('KeyE')) {
-      this.exitCar();
+    s.pts.geometry.attributes.position.needsUpdate = true;
+    s.pts.material.opacity = Math.max(0, s.life / 0.35);
+    if (s.life <= 0) {
+      G.scene.remove(s.pts);
+      s.pts.geometry.dispose();
+      G.effects.sparks.splice(i, 1);
     }
-    SOL.hud.prompt('<b>E</b> — Get out &nbsp;·&nbsp; <b>Click</b> — Drive-by shoot');
-  },
-  enterCar(car) {
-    const G = SOL.G, p = G.player;
-    const wasParked = car.parked;
-    SOL.vehicles.steal(car);
-    p.onFoot = false;
-    p.mesh.visible = false;
-    p.camYaw = Math.atan2(-Math.cos(car.heading), -Math.sin(car.heading));
-    if (!wasParked) {
-      SOL.wanted.addHeat(1, 'Car stolen in plain sight!');
-      SOL.hud.say('Car stolen! The law is watching.');
-    } else {
-      SOL.hud.say('Nice wheels. This one was just sitting there.');
-    }
-    SOL.audio.blip(220, 0.12, 'square', 0.12, 330);
-    SOL.missions.onEnterCar(car);
-  },
-  exitCar() {
-    const G = SOL.G, p = G.player, car = G.playerCar;
-    if (!car) return;
-    SOL.vehicles.leaveCar(car);
-    p.onFoot = true;
-    p.x = car.x - Math.sin(car.heading) * 3;
-    p.z = car.z + Math.cos(car.heading) * 3;
-    p.mesh.visible = true;
-    p.mesh.position.set(p.x, 0, p.z);
-    // Face the way the car was pointing: on-foot view direction is
-    // (sin camYaw, cos camYaw), car forward is (cos h, sin h).
-    p.camYaw = Math.atan2(Math.cos(car.heading), Math.sin(car.heading));
-  },
-  hurt(amount) {
-    const G = SOL.G;
-    if (G.state !== 'playing') return;
-    G.hp -= amount;
-    SOL.hud.flashDamage();
-    if (G.hp <= 0) {
-      G.hp = 0;
-      SOL.wanted.busted('You got taken down. The Solmara PD sends its regards.');
-    }
-  },
-  heal(amount) {
-    SOL.G.hp = Math.min(SOL.G.maxHp, SOL.G.hp + amount);
-  },
-};
+  }
+}
+
+export function hurtPlayer(G, dmg, cause) {
+  const p = G.player;
+  if (p.hp <= 0) return;
+  p.hp = Math.max(0, p.hp - dmg);
+  G.hud.flashDamage();
+  G.sounds.thud();
+  if (p.hp <= 0) {
+    G.state = 'wasted';
+    G.hud.showWasted();
+    G.sounds.stopEngine();
+    G.sounds.siren(false);
+  }
+}
