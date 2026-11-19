@@ -1,1 +1,7 @@
+# SOLMARA gta6-01
+node_modules/
 out/
+dist/
+*.log
+.DS_Store
+.env
